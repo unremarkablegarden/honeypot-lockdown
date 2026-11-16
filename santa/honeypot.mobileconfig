@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>PayloadDisplayName</key>
+	<string>Honeypot: Santa configuration</string>
+	<key>PayloadDescription</key>
+	<string>Points Santa at the honeypot file-access policy. Monitor mode: no binary is blocked.</string>
+	<key>PayloadIdentifier</key>
+	<string>com.euklides.honeypot.santa</string>
+	<key>PayloadType</key>
+	<string>Configuration</string>
+	<key>PayloadScope</key>
+	<string>System</string>
+	<key>PayloadUUID</key>
+	<string>FF1D0A64-3C4E-4597-AD5B-0BDA986CFC07</string>
+	<key>PayloadVersion</key>
+	<integer>1</integer>
+	<key>PayloadContent</key>
+	<array>
+		<dict>
+			<key>PayloadType</key>
+			<string>com.northpolesec.santa</string>
+			<key>PayloadIdentifier</key>
+			<string>com.euklides.honeypot.santa.config</string>
+			<key>PayloadUUID</key>
+			<string>817203EF-DB57-4BC5-A25F-A95DA75B106D</string>
+			<key>PayloadVersion</key>
+			<integer>1</integer>
+			<!-- 1 = Monitor. Santa's binary authorisation allows everything. -->
+			<key>ClientMode</key>
+			<integer>1</integer>
+			<key>FileAccessPolicyPlist</key>
+			<string>/usr/local/etc/honeypot/faa.plist</string>
+			<!-- Seconds between re-reads of the policy file. Minimum 15. -->
+			<key>FileAccessPolicyUpdateIntervalSec</key>
+			<integer>60</integer>
+			<key>EventLogType</key>
+			<string>file</string>
+			<!-- Without this Santa logs every exec on the system. -->
+			<key>Telemetry</key>
+			<array>
+				<string>FileAccess</string>
+			</array>
+		</dict>
+	</array>
+</dict>
+</plist>

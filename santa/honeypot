@@ -1,0 +1,160 @@
+#!/bin/zsh
+# Honeypot watcher and control command, Santa variant.
+#
+# Santa (North Pole Security) watches the decoy file through a file-access
+# rule. It filters by path inside Endpoint Security, denies the access and
+# writes one line to its event log. `honeypot watch` runs as a LaunchDaemon,
+# follows that log and, in armed mode, loads a pf ruleset that drops all
+# non-loopback traffic. The other subcommands inspect and change state.
+
+set -u
+set -o pipefail
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+
+SELF=${0:A}
+ETC=/usr/local/etc/honeypot
+VAR=/var/db/honeypot
+LOG=/var/log/honeypot.log
+POLICY=$ETC/faa.plist
+SANTA_LOG=/var/db/santa/santa.log
+SANTACTL=/Applications/Santa.app/Contents/MacOS/santactl
+# Name of the watch item in faa.plist. Santa prints it in every log line
+# for the rule as policy_name=<name>.
+RULE=Honeypot
+
+# Sets HONEYFILE (absolute path of the decoy). Written by install.sh.
+source $ETC/honeypot.conf
+
+log() { print -r -- "$(date '+%Y-%m-%d %H:%M:%S') $*" >> $LOG }
+mode() { cat $VAR/mode 2>/dev/null || print observe }
+state() { cat $VAR/state 2>/dev/null || print unlocked }
+need_root() { (( EUID == 0 )) || { print -u2 "run with sudo"; exit 1 } }
+
+apply_block() {
+  local out token
+  out=$(pfctl -E -f $ETC/lockdown.pf.conf 2>&1)
+  # -E is reference counted. The token is needed to release this reference.
+  token=$(print -r -- "$out" | awk '/^Token/ { print $3 }')
+  [[ -n $token ]] && print -r -- "$token" > $VAR/pf.token
+  # Existing connections have state entries that bypass the new rules.
+  pfctl -F states 2>/dev/null
+  if pfctl -sr 2>/dev/null | grep -q '^block drop quick all'; then
+    log "network blocked"
+  else
+    log "pf block failed: $out"
+  fi
+}
+
+ancestry() {
+  local pid=$1 i
+  for i in {1..12}; do
+    (( pid > 1 )) || break
+    ps -o pid=,ppid=,user=,command= -p $pid || break
+    pid=$(ps -o ppid= -p $pid | tr -d ' ')
+  done
+}
+
+alert() {
+  local user uid
+  user=$(stat -f %Su /dev/console)
+  [[ $user == root ]] && return
+  uid=$(id -u $user)
+  # The message is passed as an argument so that a crafted executable path
+  # cannot inject AppleScript.
+  launchctl asuser $uid sudo -u $user osascript \
+    -e 'on run argv' \
+    -e 'display alert "Honeypot tripped: network blocked" message (item 1 of argv) as critical' \
+    -e 'end run' "$1" &>/dev/null &!
+}
+
+# One Santa log line: key=value fields separated by "|". Santa replaces a
+# literal "|" inside a value, so splitting on it is safe.
+handle() {
+  local line=$1 kv
+  local -A f
+  for kv in ${(s:|:)line}; do
+    [[ $kv == *=* ]] && f[${kv%%=*}]=${kv#*=}
+  done
+  local pid=${f[pid]:-0} exe=${f[processpath]:-unknown} type=${f[access_type]:-unknown}
+
+  log "hit $type decision=${f[decision]:-unknown} pid=$pid ppid=${f[ppid]:-} user=${f[user]:-} exe=$exe mode=$(mode)"
+  print -r -- "$line" >> $LOG
+  # Santa writes its log in batches, so the process may have exited. Its
+  # parent is then the closest record of where it came from.
+  if ps -p $pid >/dev/null 2>&1; then
+    ancestry $pid >> $LOG 2>/dev/null
+  else
+    ancestry ${f[ppid]:-0} >> $LOG 2>/dev/null
+  fi
+
+  [[ $(mode) == armed && $(state) == unlocked ]] || return 0
+  print locked > $VAR/state
+  apply_block
+  alert "$exe (pid $pid) attempted $type on $HONEYFILE at $(date '+%H:%M:%S'). Santa denied the access.
+Details: $LOG
+Restore: sudo $SELF unlock"
+}
+
+watch() {
+  need_root
+  # pf rules do not persist across a reboot.
+  [[ $(state) == locked ]] && apply_block
+  log "watch start mode=$(mode) state=$(state) file=$HONEYFILE"
+  # -F follows the file by name, so log rotation and a log that does not
+  # exist yet are both handled. -n 0 skips lines written before this start.
+  tail -n 0 -F $SANTA_LOG 2>/dev/null \
+    | grep --line-buffered -F -- "policy_name=$RULE|" \
+    | while IFS= read -r line; do handle $line; done
+  log "log follower ended, status ${pipestatus[1,2]}"
+  exit 1
+}
+
+unlock() {
+  need_root
+  pfctl -f /etc/pf.conf 2>/dev/null
+  [[ -s $VAR/pf.token ]] && pfctl -X $(<$VAR/pf.token) 2>/dev/null
+  : > $VAR/pf.token
+  print unlocked > $VAR/state
+  log "unlocked"
+  print "network restored"
+}
+
+# Adds a process to the rule's allowed list. Apple binaries are matched by
+# signing ID plus the platform-binary flag, others by signing ID plus team
+# ID. Santa picks the change up at its next policy re-read.
+allow() {
+  need_root
+  local id=${1:?signing id} team=${2:-}
+  local pb=/usr/libexec/PlistBuddy at=":WatchItems:${RULE}:Processes:0"
+  $pb -c "Add ${at} dict" -c "Add ${at}:SigningID string $id" $POLICY
+  if [[ -n $team ]]; then
+    $pb -c "Add ${at}:TeamID string $team" $POLICY
+  else
+    $pb -c "Add ${at}:PlatformBinary bool true" $POLICY
+  fi
+  $pb -c "Print :WatchItems:${RULE}:Processes" $POLICY
+}
+
+status() {
+  print "mode:    $(mode)"
+  print "state:   $(state)"
+  print "file:    $HONEYFILE $([[ -f $HONEYFILE ]] || print '(missing)')"
+  print "watcher: $(pgrep -f "$SELF watch" >/dev/null && print running || print 'not running')"
+  if [[ -x $SANTACTL ]]; then
+    print "santa:"
+    $SANTACTL status 2>&1 | grep -i -A 6 'watch items' | sed 's/^/  /'
+  else
+    print "santa:   not installed"
+  fi
+}
+
+case ${1:-} in
+  watch)   watch ;;
+  status)  status ;;
+  arm)     need_root; print armed > $VAR/mode; log "mode armed"; status ;;
+  observe) need_root; print observe > $VAR/mode; log "mode observe"; status ;;
+  unlock)  unlock ;;
+  allow)   shift; allow "$@" ;;
+  log)     tail -n ${2:-40} $LOG ;;
+  *)       print -u2 "usage: honeypot status|arm|observe|unlock|allow <signing-id> [team-id]|log [lines]"; exit 2 ;;
+esac
