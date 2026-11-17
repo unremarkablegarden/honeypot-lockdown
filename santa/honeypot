@@ -16,6 +16,9 @@ ETC=/usr/local/etc/honeypot
 VAR=/var/db/honeypot
 LOG=/var/log/honeypot.log
 POLICY=$ETC/faa.plist
+# Executable paths, one per line, whose denied accesses are logged without
+# a lockdown. Santa still denies them.
+NOLOCK=$ETC/nolock.list
 SANTA_LOG=/var/db/santa/santa.log
 SANTACTL=/Applications/Santa.app/Contents/MacOS/santactl
 # Name of the watch item in faa.plist. Santa prints it in every log line
@@ -88,6 +91,10 @@ handle() {
   fi
 
   [[ $(mode) == armed && $(state) == unlocked ]] || return 0
+  if grep -qxF -- "$exe" $NOLOCK 2>/dev/null; then
+    log "no lockdown: $exe is in $NOLOCK"
+    return 0
+  fi
   print locked > $VAR/state
   apply_block
   alert "$exe (pid $pid) attempted $type on $HONEYFILE at $(date '+%H:%M:%S'). Santa denied the access.
@@ -135,6 +142,17 @@ allow() {
   $pb -c "Print :WatchItems:${RULE}:Processes" $POLICY
 }
 
+# Adds an executable path to the no-lockdown list. The match is on path
+# only, so the path must be one the user account cannot write to, such as
+# a SIP-protected system path. The watcher reads the list on every hit.
+nolock() {
+  need_root
+  local exe=${1:?executable path}
+  [[ -x $exe ]] || { print -u2 "not an executable: $exe"; exit 1 }
+  grep -qxF -- "$exe" $NOLOCK 2>/dev/null || print -r -- "$exe" >> $NOLOCK
+  cat $NOLOCK
+}
+
 status() {
   print "mode:    $(mode)"
   print "state:   $(state)"
@@ -155,6 +173,7 @@ case ${1:-} in
   observe) need_root; print observe > $VAR/mode; log "mode observe"; status ;;
   unlock)  unlock ;;
   allow)   shift; allow "$@" ;;
+  nolock)  shift; nolock "$@" ;;
   log)     tail -n ${2:-40} $LOG ;;
-  *)       print -u2 "usage: honeypot status|arm|observe|unlock|allow <signing-id> [team-id]|log [lines]"; exit 2 ;;
+  *)       print -u2 "usage: honeypot status|arm|observe|unlock|allow <signing-id> [team-id]|nolock <exe-path>|log [lines]"; exit 2 ;;
 esac

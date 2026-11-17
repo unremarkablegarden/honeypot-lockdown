@@ -64,6 +64,7 @@ The command is `/usr/local/libexec/honeypot/honeypot`. Call it by full path: `/u
 | `arm` | Violations also block the network and show the alert |
 | `unlock` | Restore the network: reload `/etc/pf.conf`, release the pf reference, clear the lock |
 | `allow <signing-id> [team-id]` | Let a process touch the decoy. Without a team ID the entry applies to Apple platform binaries only. Santa applies it within 60 s |
+| `nolock <exe-path>` | Santa still denies the process, and the hit is logged, but the network is not blocked. Matches on executable path only: use it for SIP-protected system paths |
 | `log [n]` | Last n lines of `/var/log/honeypot.log` |
 
 ### First days: observe
@@ -111,6 +112,7 @@ Expected: `Operation not permitted` and, a few seconds later, a `hit OPEN decisi
 
 - `stat`, `ls` and globbing do not trigger. Only access to the content or a second name for the file does.
 - A process on the allowed list can be used as a proxy. Keep the list short; do not add shells or QuickLook.
+- A file dialog that lists the home directory makes `com.apple.appkit.xpc.openAndSavePanelService` open the decoy for a preview. Add it with `nolock`. The service acts for whichever application opened the dialog, so a hit from it is still logged.
 - Third-party backup or sync tools that scan the home directory are denied and trip the lockdown. Exclude the file in the tool, or `allow` the tool. Time Machine is excluded by `install.sh`.
 - Santa does not follow symlinks in watched paths and cannot guarantee coverage of hard links that existed before the rule. It denies creating new ones.
 - pf does not stop AirDrop or Bluetooth. A VPN client that reloads pf rules replaces the block.
