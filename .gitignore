@@ -1,3 +1,4 @@
 .env
 .env.*
 .trash/
+.DS_Store
